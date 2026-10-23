@@ -459,14 +459,15 @@ class TimedRotatingFileHandler(BaseRotatingHandler):
             timeTuple = time.gmtime(t)
         else:
             timeTuple = time.localtime(t)
-            dstNow = time.localtime(currentTime)[-1]
-            dstThen = timeTuple[-1]
-            if dstNow != dstThen:
-                if dstNow:
-                    addend = 3600
-                else:
-                    addend = -3600
-                timeTuple = time.localtime(t + addend)
+            if self.when == 'MIDNIGHT' or self.when.startswith('W'):
+                dstAtRollover = time.localtime(self.rolloverAt)[-1]
+                dstThen = timeTuple[-1]
+                if dstAtRollover != dstThen:
+                    if dstAtRollover:
+                        addend = 3600
+                    else:
+                        addend = -3600
+                    timeTuple = time.localtime(t + addend)
         dfn = self.rotation_filename(self.baseFilename + "." +
                                      time.strftime(self.suffix, timeTuple))
         if os.path.exists(dfn):

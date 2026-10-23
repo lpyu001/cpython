@@ -6726,6 +6726,27 @@ class RotatingFileHandlerTest(BaseFileTest):
         rh.close()
 
 class TimedRotatingFileHandlerTest(BaseFileTest):
+    def _make_fake_time_handler(self, times, **kwargs):
+        directory = tempfile.mkdtemp(prefix='test_logging_rollover_')
+        self.addCleanup(shutil.rmtree, directory)
+        filename = os.path.join(directory, 'test.log')
+        with patch.object(time, 'time', return_value=times[0]):
+            fh = logging.handlers.TimedRotatingFileHandler(
+                filename, encoding='utf-8', delay=True, **kwargs)
+        self.addCleanup(fh.close)
+        return fh
+
+    def _emit_at(self, fh, times):
+        for t in times:
+            with patch.object(time, 'time', return_value=t):
+                msg = time.strftime('%H:%M%Z', time.localtime(t))
+                fh.emit(logging.makeLogRecord({'msg': msg}))
+        fh.close()
+        directory = os.path.dirname(fh.baseFilename)
+        return {name: pathlib.Path(directory, name).read_text(
+                    encoding='utf-8').splitlines()
+                for name in os.listdir(directory)}
+
     @unittest.skipIf(support.is_wasi, "WASI does not have /dev/null.")
     def test_should_not_rollover(self):
         # See bpo-45401. Should only ever rollover regular files
@@ -6901,6 +6922,71 @@ class TimedRotatingFileHandlerTest(BaseFileTest):
 
     def test_rollover_at_weekday(self):
         self.test_rollover_at_midnight(weekly=True)
+
+    @support.run_with_tz('EST+05EDT,M3.2.0,M11.1.0')
+    def test_rollover_filenames_dst_hourly(self):
+        # DST begins at 2012-3-11T02:00:00 and ends at 2012-11-4T02:00:00.
+        DT = datetime.datetime
+        start = DT(2012, 3, 11, 0, 0).timestamp()
+        fh = self._make_fake_time_handler([start], when='H')
+        times = [start + i*3600 for i in range(5)]
+        self.assertEqual(self._emit_at(fh, times), {
+            'test.log.2012-03-11_00': ['00:00EST'],
+            'test.log.2012-03-11_01': ['01:00EST'],
+            'test.log.2012-03-11_03': ['03:00EDT'],
+            'test.log.2012-03-11_04': ['04:00EDT'],
+            'test.log': ['05:00EDT'],
+        })
+
+        # The repeated 01:00 triggers rollover of the first 01:00 interval.
+        start = DT(2012, 11, 4, 0, 0).timestamp()
+        fh = self._make_fake_time_handler([start], when='H')
+        times = [start + i*3600 for i in range(3)]
+        self.assertEqual(self._emit_at(fh, times), {
+            'test.log.2012-11-04_00': ['00:00EDT'],
+            'test.log.2012-11-04_01': ['01:00EDT'],
+            'test.log': ['01:00EST'],
+        })
+
+    @support.run_with_tz('EST+05EDT,M3.2.0,M11.1.0')
+    def test_rollover_filenames_dst_daily(self):
+        start = datetime.datetime(2012, 3, 9, 23, 30).timestamp()
+        fh = self._make_fake_time_handler([start], when='D')
+        times = [start + i*12*3600 for i in range(6)]
+        self.assertEqual(self._emit_at(fh, times), {
+            'test.log.2012-03-09': ['23:30EST', '11:30EST'],
+            'test.log.2012-03-10': ['23:30EST', '12:30EDT'],
+            'test.log': ['00:30EDT', '12:30EDT'],
+        })
+
+    @support.run_with_tz('EST+05EDT,M3.2.0,M11.1.0')
+    def test_rollover_filenames_dst_midnight(self):
+        # The file name must not depend on the DST state at the time of
+        # the record that triggered the rollover.
+        DT = datetime.datetime
+        times = [DT(2012, 3, 1, 12, 0).timestamp(),
+                 DT(2012, 4, 1, 12, 0).timestamp(),
+                 DT(2012, 12, 1, 12, 0).timestamp()]
+        fh = self._make_fake_time_handler(times[:1], when='MIDNIGHT',
+                                          atTime=datetime.time(23, 30))
+        self.assertEqual(self._emit_at(fh, times), {
+            'test.log.2012-02-29': ['12:00EST'],
+            'test.log.2012-03-31': ['12:00EDT'],
+            'test.log': ['12:00EST'],
+        })
+
+        # The first record after midnight is logged after DST ends
+        # at 2012-11-4T02:00:00.
+        times = [DT(2012, 11, day, hour, 0).timestamp()
+                 for day in (2, 3, 4, 5, 6) for hour in (9, 18)]
+        fh = self._make_fake_time_handler(times[:1], when='MIDNIGHT')
+        self.assertEqual(self._emit_at(fh, times), {
+            'test.log.2012-11-02': ['09:00EDT', '18:00EDT'],
+            'test.log.2012-11-03': ['09:00EDT', '18:00EDT'],
+            'test.log.2012-11-04': ['09:00EST', '18:00EST'],
+            'test.log.2012-11-05': ['09:00EST', '18:00EST'],
+            'test.log': ['09:00EST', '18:00EST'],
+        })
 
     def test_invalid(self):
         assertRaises = self.assertRaises

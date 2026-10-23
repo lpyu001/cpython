@@ -1,0 +1,4 @@
+Correct backup filenames produced by
+:class:`logging.handlers.TimedRotatingFileHandler` across daylight saving
+time changes when using local time. Incorrect names could collide with
+existing backups and skip a rollover.
